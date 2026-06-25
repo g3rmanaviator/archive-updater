@@ -1,0 +1,14 @@
+# archive-validator dependencies
+#
+# Install with:
+#   pip install -r requirements.txt
+
+# HTML parsing
+beautifulsoup4>=4.9.0
+lxml>=4.6.0          # Faster HTML parser (BeautifulSoup falls back to html.parser if unavailable)
+
+# HTTP requests (only needed for --external flag)
+requests>=2.25.0
+
+# Note: The following are part of Python's standard library and do not need installation:
+#   pathlib, urllib.parse, argparse, difflib, csv, json, html, re, sys, datetime

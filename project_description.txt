@@ -1,0 +1,212 @@
+Build a Ubuntu-compatible command-line tool for validating archived website snapshots.
+
+Context:
+I have an archival website hosted under:
+
+https://sugarhouse.stclaresalumni.org/mirror/archives/
+
+On disk, the files are stored under:
+
+/htdocs/alumni/mirror/archives/
+
+Each archive folder represents one complete website snapshot, for example:
+
+/htdocs/alumni/mirror/archives/archive-1998-06-01
+
+which maps publicly to:
+
+https://sugarhouse.stclaresalumni.org/mirror/archives/archive-1998-06-01/
+
+Goal:
+Create a tool that crawls one archive snapshot folder, detects broken internal links, searches other archive folders for possible replacement files, and generates an HTML report.
+
+Core requirements:
+
+1. Input options
+
+The tool should accept:
+
+--input-dir /htdocs/alumni/mirror/archives/archive-1998-06-01
+
+--base-url https://sugarhouse.stclaresalumni.org/mirror/archives/archive-1998-06-01/
+
+--search-dir /htdocs/alumni/mirror/archives
+
+--output report.html
+
+2. Crawl behavior
+
+Recursively scan the input directory for HTML files.
+
+For each HTML file:
+
+* Parse links from:
+
+  * a href
+  * img src
+  * script src
+  * link href
+  * frame src
+  * iframe src
+  * background attributes if present
+* Resolve relative URLs correctly based on the source file location.
+* Ignore:
+
+  * mailto:
+  * tel:
+  * javascript:
+  * anchors-only links like #top
+  * external links by default
+* Strip URL fragments when checking file existence.
+* Handle URL-encoded filenames.
+* Treat query strings as non-file-identifying unless configured otherwise.
+
+3. Dead link detection
+
+For every internal link that points to a local file inside the archive snapshot:
+
+* Map the URL back to the local filesystem path.
+* Check whether the target file exists.
+* If missing, record it as a dead link.
+* Include:
+
+  * source HTML file
+  * source public URL
+  * broken link exactly as written
+  * resolved target URL
+  * expected local path
+  * link type, such as image, page, css, js, frame
+
+4. Replacement candidate search
+
+For every missing target:
+
+Search recursively under:
+
+/htdocs/alumni/mirror/archives
+
+Look for possible replacement candidates.
+
+Candidate matching should include:
+
+* Exact filename match
+* Case-insensitive filename match
+* URL-decoded filename match
+* Same relative path in another archive folder
+* Same basename with different extension case, such as .JPG vs .jpg
+* Optional fuzzy matching for nearby filenames
+
+For each candidate, include:
+
+* candidate local path
+* candidate public URL
+* archive folder where it was found
+* match type
+* confidence score
+
+5. Report output
+
+Generate an HTML report.
+
+The report should include:
+
+* Summary counts:
+
+  * total HTML files scanned
+  * total links checked
+  * total broken links
+  * broken images
+  * broken pages
+  * broken CSS/JS/assets
+  * number of broken links with replacement candidates
+* A table of broken links with:
+
+  * source page
+  * broken link
+  * expected missing path
+  * link type
+  * replacement candidates
+* Candidate links should be clickable using public URLs.
+* Include filters or grouped sections by:
+
+  * source page
+  * link type
+  * archive folder
+  * missing filename
+
+6. Recommended implementation
+
+Use Python 3.
+
+Suggested libraries:
+
+* beautifulsoup4 or lxml for HTML parsing
+* pathlib for filesystem paths
+* urllib.parse for URL handling
+* jinja2 for HTML report generation
+* argparse for CLI arguments
+
+7. Nice-to-have v1 features
+
+Add:
+
+--external
+
+to optionally check external links using HTTP HEAD/GET.
+
+Add:
+
+--json-output report.json
+
+to export machine-readable results.
+
+Add:
+
+--csv-output report.csv
+
+to export a spreadsheet-friendly report.
+
+Add:
+
+--max-candidates 10
+
+to limit replacement candidates per broken link.
+
+Add:
+
+--include-ext .html,.htm,.jpg,.gif,.png,.css,.js
+
+to control which file types are checked.
+
+Add:
+
+--ignore-pattern
+
+to skip paths such as old counters, tracking pixels, cgi-bin links, or known intentionally missing files.
+
+Add:
+
+--case-sensitive
+
+or
+
+--case-insensitive
+
+because old websites may have inconsistent filename casing.
+
+8. Safety requirements
+
+The tool must not modify files.
+
+It should only read archive folders and write reports.
+
+9. Deliverables
+
+Create:
+
+* README.md with install and usage instructions
+* requirements.txt
+* Python source code
+* sample command examples
+* sample HTML report output
+* clear comments explaining the URL-to-filesystem mapping logic
