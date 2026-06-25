@@ -300,8 +300,21 @@ def generate_html_report(
         # Broken link cell
         broken_cell = _e(b.raw_href)
 
-        # Expected path cell
-        path_cell = _e(b.expected_path_display)
+        # Expected path cell — hyperlink it when base_url is available
+        if b.expected_path and summary.base_url and summary.input_dir:
+            try:
+                rel = b.expected_path.resolve().relative_to(summary.input_dir.resolve())
+                rel_str = "/".join(rel.parts)
+                path_url = summary.base_url.rstrip("/") + "/" + rel_str
+                path_cell = (
+                    '<a href="' + _e(path_url) + '" target="_blank">'
+                    + _e(b.expected_path_display)
+                    + '</a>'
+                )
+            except ValueError:
+                path_cell = _e(b.expected_path_display)
+        else:
+            path_cell = _e(b.expected_path_display)
 
         # Type badge
         type_cell = _badge(b.link_type, b.is_external)

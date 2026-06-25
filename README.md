@@ -64,7 +64,7 @@ python archive_validator.py --input-dir PATH [options]
 
 | Argument | Description |
 |---|---|
-| `--base-url URL` | Public URL for the input archive. Enables clickable source links in the report and recognition of absolute URLs as internal. Example: `https://example.org/mirror/archives/archive-1998-06-01/` |
+| `--base-url URL` | Public URL for the input archive. Enables clickable source links in the report, recognition of absolute URLs as internal, and hyperlinked expected paths in the broken links table. Example: `https://example.org/mirror/archives/archive-1998-06-01/` |
 | `--search-base-url URL` | Public URL prefix for `--search-dir`. Enables clickable candidate links. Example: `https://example.org/mirror/archives/` |
 
 ### Candidate search options
