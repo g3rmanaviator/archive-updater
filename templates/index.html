@@ -87,6 +87,27 @@
         <label for="fuzzy">--fuzzy &mdash; Enable fuzzy filename matching for candidates</label>
       </div>
     </div>
+
+    <div class="field-group">
+      <label for="index_db">--index-db</label>
+      <div>
+        <input type="text" id="index_db" name="index_db" class="monospace"
+               placeholder="search_index.db (default: project root)">
+        <div class="hint">
+          Path to the persistent SQLite file index. Built on first run, updated
+          incrementally on subsequent runs. Defaults to <code>search_index.db</code>
+          in the project root.
+        </div>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <label></label>
+      <div class="checkbox-row">
+        <input type="checkbox" id="rebuild_index" name="rebuild_index" value="1">
+        <label for="rebuild_index">--rebuild-index &mdash; Force full rebuild of the file index</label>
+      </div>
+    </div>
   </div>
 
   <!-- ── Output ────────────────────────────────────────────────────────── -->

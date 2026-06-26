@@ -12,18 +12,28 @@ Matching strategies (DD-008), in priority order:
   5. Case-insensitive filename match                      → 60% confidence
   6. Fuzzy filename match (difflib, ratio ≥ 0.6)         → 20–50% confidence
 
-The search index is built once from all files under --search-dir
-(excluding the input archive) and reused for all broken links.
+Date proximity bonus (applied on top of base confidence):
+  Same archive, different subfolder                       → +5
+  Within 3 months of the target archive date             → +4
+  Within 1 year                                          → +3
+  Within 2 years                                         → +2
+  More than 2 years away                                 → +0
+
+The search index is backed by a persistent SQLite database (FileIndex)
+that is updated incrementally — only re-scanning archive folders whose
+directory mtime has changed since the last run.
 """
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
 
 from .detector import BrokenLink
+from .fileindex import FileIndex, FileRow, _parse_archive_date
 
 
 @dataclass
@@ -39,16 +49,22 @@ class Candidate:
         Clickable public URL for the candidate (if search_base_url provided).
     archive_folder : str
         Name of the archive folder where the candidate was found.
+    archive_date : str or None
+        Date of the candidate's archive (YYYY-MM-DD), if parseable.
     match_type : str
         Description of how the match was found.
     confidence : int
         Confidence score 0–100.
+    total_versions : int
+        Total number of files with the same filename across all archives.
     """
     local_path: Path
     public_url: Optional[str]
     archive_folder: str
+    archive_date: Optional[str]
     match_type: str
     confidence: int
+    total_versions: int = 0
 
     @property
     def display_path(self) -> str:
@@ -56,10 +72,50 @@ class Candidate:
         return self.public_url or str(self.local_path)
 
 
+def _date_proximity_bonus(
+    target_date: Optional[date],
+    candidate_date_str: Optional[str],
+    same_archive: bool,
+) -> int:
+    """
+    Compute a small date-proximity bonus for a candidate.
+
+    Parameters
+    ----------
+    target_date : date or None
+        The date of the archive being validated.
+    candidate_date_str : str or None
+        The archive_date of the candidate ("YYYY-MM-DD" or None).
+    same_archive : bool
+        True if the candidate is in the same archive as the broken link
+        (different subfolder).
+
+    Returns
+    -------
+    int bonus (0–5)
+    """
+    if same_archive:
+        return 5
+    if target_date is None or candidate_date_str is None:
+        return 0
+    try:
+        cand_date = date.fromisoformat(candidate_date_str)
+    except ValueError:
+        return 0
+    days_diff = abs((cand_date - target_date).days)
+    if days_diff <= 90:
+        return 4
+    if days_diff <= 365:
+        return 3
+    if days_diff <= 730:
+        return 2
+    return 0
+
+
 class ReplacementSearcher:
     """
-    Builds a search index from all archive folders and finds replacement
-    candidates for broken links.
+    Finds replacement candidates for broken links using a persistent
+    SQLite file index (FileIndex).
 
     Parameters
     ----------
@@ -67,15 +123,19 @@ class ReplacementSearcher:
         Root directory containing all archive folders.
     input_dir : Path
         The archive being validated (excluded from search results).
+    db_path : Path
+        Path to the SQLite index database.
     search_base_url : str or None
         Public URL prefix for search_dir. Used to construct clickable
-        candidate URLs. e.g. "https://example.org/mirror/archives/"
+        candidate URLs. e.g. "https://example.org/mirror/"
     max_candidates : int
         Maximum number of candidates to return per broken link.
     case_insensitive : bool
         If True, use case-insensitive matching throughout.
     fuzzy : bool
         If True, enable fuzzy filename matching as a fallback strategy.
+    force_rebuild : bool
+        If True, force a full rebuild of the file index.
     verbose : bool
         If True, print progress to stderr.
     """
@@ -84,10 +144,12 @@ class ReplacementSearcher:
         self,
         search_dir: Path,
         input_dir: Path,
+        db_path: Path,
         search_base_url: str = None,
         max_candidates: int = 5,
         case_insensitive: bool = False,
         fuzzy: bool = False,
+        force_rebuild: bool = False,
         verbose: bool = True,
     ):
         self.search_dir = search_dir.resolve()
@@ -95,6 +157,7 @@ class ReplacementSearcher:
         self.max_candidates = max_candidates
         self.case_insensitive = case_insensitive
         self.fuzzy = fuzzy
+        self.force_rebuild = force_rebuild
         self.verbose = verbose
 
         # Normalize search_base_url
@@ -103,73 +166,72 @@ class ReplacementSearcher:
         else:
             self.search_base_url = None
 
-        # The search index: built once, reused for all broken links
-        # Maps lowercase filename → list of (Path, archive_folder_name)
-        self._index_by_name: dict[str, list[tuple[Path, str]]] = {}
-        # Maps (archive_folder, relative_path_from_archive_root) → Path
-        self._index_by_relpath: dict[tuple[str, str], Path] = {}
-        # All archive folder names (for display)
-        self._archive_folders: list[str] = []
+        # Parse the target archive's date from its folder name
+        self._target_archive_date: Optional[date] = None
+        date_str = _parse_archive_date(input_dir.name)
+        if date_str:
+            try:
+                self._target_archive_date = date.fromisoformat(date_str)
+            except ValueError:
+                pass
 
+        # FileIndex instance (opened lazily)
+        self._index: Optional[FileIndex] = None
+        self._db_path = db_path
         self._index_built = False
+
+        # Fuzzy search cache: filename_lower → list of (FileRow, ratio)
+        # Built lazily on first fuzzy search
+        self._fuzzy_cache: Optional[list[tuple[str, str, str]]] = None
+
+    # ------------------------------------------------------------------
+    # Index management
+    # ------------------------------------------------------------------
 
     def build_index(self) -> None:
         """
-        Recursively scan all archive folders under search_dir (excluding
-        input_dir) and build the search index.
+        Update the persistent file index.
 
-        This is called once before searching begins.
+        On the first run this walks all archive folders and populates the
+        database. On subsequent runs, only changed folders are re-scanned.
         """
         self._print("      Building search index from other archive folders...")
 
-        if not self.search_dir.exists():
-            self._print(f"[WARNING] --search-dir does not exist: {self.search_dir}")
-            self._index_built = True
-            return
+        self._index = FileIndex(
+            db_path=self._db_path,
+            search_dir=self.search_dir,
+            input_dir=self.input_dir,
+            verbose=self.verbose,
+        )
 
-        # Find all immediate subdirectories of search_dir = archive folders
-        try:
-            archive_dirs = [
-                d for d in sorted(self.search_dir.iterdir())
-                if d.is_dir() and d.resolve() != self.input_dir
-            ]
-        except PermissionError as e:
-            self._print(f"[WARNING] Cannot read search-dir: {e}")
-            self._index_built = True
-            return
+        stats = self._index.update(force_rebuild=self.force_rebuild)
 
-        self._archive_folders = [d.name for d in archive_dirs]
-        total_files = 0
+        total = stats["total_files"]
+        skipped = stats["skipped_folders"]
+        added = stats["added"]
+        deleted = stats["deleted"]
 
-        for archive_dir in archive_dirs:
-            archive_name = archive_dir.name
-            try:
-                for file_path in archive_dir.rglob("*"):
-                    if not file_path.is_file():
-                        continue
+        if skipped > 0 and added == 0 and deleted == 0:
+            self._print(
+                f"      Index up to date: {total:,} file(s) across "
+                f"{self._index.archive_count()} archive folder(s) "
+                f"({skipped} folder(s) unchanged, skipped)."
+            )
+        else:
+            self._print(
+                f"      Indexed {total:,} file(s) across "
+                f"{self._index.archive_count()} archive folder(s)."
+            )
+            if added or deleted:
+                self._print(
+                    f"      Changes: +{added} added, -{deleted} removed."
+                )
 
-                    total_files += 1
-
-                    # Index by lowercase filename
-                    lower_name = file_path.name.lower()
-                    if lower_name not in self._index_by_name:
-                        self._index_by_name[lower_name] = []
-                    self._index_by_name[lower_name].append((file_path, archive_name))
-
-                    # Index by (archive_name, relative_path_from_archive_root)
-                    try:
-                        rel = file_path.relative_to(archive_dir)
-                        rel_str = "/".join(rel.parts).lower()
-                        self._index_by_relpath[(archive_name, rel_str)] = file_path
-                    except ValueError:
-                        pass
-
-            except PermissionError as e:
-                self._print(f"[WARNING] Cannot read archive folder {archive_name}: {e}")
-
-        self._print(f"      Indexed {total_files} file(s) across "
-                    f"{len(archive_dirs)} archive folder(s).")
         self._index_built = True
+
+    # ------------------------------------------------------------------
+    # Candidate search
+    # ------------------------------------------------------------------
 
     def find_candidates(self, broken: BrokenLink) -> list[Candidate]:
         """
@@ -191,7 +253,7 @@ class ReplacementSearcher:
         if broken.expected_path is None:
             return []
 
-        candidates: dict[Path, Candidate] = {}  # path → best candidate
+        candidates: dict[str, Candidate] = {}  # abs_path → best candidate
 
         target_path = broken.expected_path
         target_name = target_path.name
@@ -209,70 +271,110 @@ class ReplacementSearcher:
 
         # --- Strategy 1: Exact relative path in another archive (95%) ---
         if target_rel_str:
-            for archive_name in self._archive_folders:
-                key = (archive_name, target_rel_str)
-                if key in self._index_by_relpath:
-                    found = self._index_by_relpath[key]
-                    self._add_candidate(
-                        candidates, found, archive_name,
-                        "exact relative path in another archive", 95
-                    )
+            rows = self._index.find_by_relpath(target_rel_str)
+            for row in rows:
+                same_archive = (row.archive == self.input_dir.name)
+                bonus = _date_proximity_bonus(
+                    self._target_archive_date, row.archive_date, same_archive
+                )
+                self._add_candidate(
+                    candidates, row,
+                    "exact relative path in another archive",
+                    95 + bonus,
+                )
 
         # --- Strategy 2: Extension case difference (.JPG vs .jpg) (80%) ---
-        # The target name and a candidate differ only in extension case
         target_stem = Path(target_name_lower).stem
         target_ext_lower = Path(target_name_lower).suffix.lower()
 
-        for lower_name, entries in self._index_by_name.items():
-            cand_stem = Path(lower_name).stem
-            cand_ext = Path(lower_name).suffix.lower()
-            if (cand_stem == target_stem and
-                    cand_ext == target_ext_lower and
-                    lower_name != target_name_lower):
-                # Same stem and extension when lowercased, but different case
-                for file_path, archive_name in entries:
-                    if file_path.name != target_name:  # actual case differs
-                        self._add_candidate(
-                            candidates, file_path, archive_name,
-                            "extension case difference", 80
-                        )
+        # We need all files whose lowercase filename has the same stem+ext
+        # but whose actual filename differs in case from the target.
+        # Query by filename (already lowercase in DB) — then filter.
+        rows = self._index.find_by_filename(target_name_lower)
+        for row in rows:
+            # The stored filename is lowercase; the actual file may differ in case.
+            # Strategy 2 applies when the actual file's name differs from target_name.
+            actual_name = Path(row.abs_path).name
+            if actual_name != target_name:
+                cand_stem = Path(row.filename).stem
+                cand_ext = Path(row.filename).suffix.lower()
+                if cand_stem == target_stem and cand_ext == target_ext_lower:
+                    same_archive = (row.archive == self.input_dir.name)
+                    bonus = _date_proximity_bonus(
+                        self._target_archive_date, row.archive_date, same_archive
+                    )
+                    self._add_candidate(
+                        candidates, row,
+                        "extension case difference",
+                        80 + bonus,
+                    )
 
         # --- Strategy 3: Exact filename match (different location) (70%) ---
-        if target_name in [e[0].name for e in self._index_by_name.get(target_name_lower, [])]:
-            for file_path, archive_name in self._index_by_name.get(target_name_lower, []):
-                if file_path.name == target_name:
-                    self._add_candidate(
-                        candidates, file_path, archive_name,
-                        "exact filename match", 70
-                    )
+        rows = self._index.find_by_filename(target_name_lower)
+        for row in rows:
+            actual_name = Path(row.abs_path).name
+            if actual_name == target_name:
+                same_archive = (row.archive == self.input_dir.name)
+                bonus = _date_proximity_bonus(
+                    self._target_archive_date, row.archive_date, same_archive
+                )
+                self._add_candidate(
+                    candidates, row,
+                    "exact filename match",
+                    70 + bonus,
+                )
 
         # --- Strategy 4: URL-decoded filename match (65%) ---
         if target_name_decoded != target_name:
-            decoded_lower = target_name_decoded_lower
-            for file_path, archive_name in self._index_by_name.get(decoded_lower, []):
+            rows = self._index.find_by_filename(target_name_decoded_lower)
+            for row in rows:
+                same_archive = (row.archive == self.input_dir.name)
+                bonus = _date_proximity_bonus(
+                    self._target_archive_date, row.archive_date, same_archive
+                )
                 self._add_candidate(
-                    candidates, file_path, archive_name,
-                    "URL-decoded filename match", 65
+                    candidates, row,
+                    "URL-decoded filename match",
+                    65 + bonus,
                 )
 
         # --- Strategy 5: Case-insensitive filename match (60%) ---
-        for file_path, archive_name in self._index_by_name.get(target_name_lower, []):
+        rows = self._index.find_by_filename(target_name_lower)
+        for row in rows:
+            same_archive = (row.archive == self.input_dir.name)
+            bonus = _date_proximity_bonus(
+                self._target_archive_date, row.archive_date, same_archive
+            )
             self._add_candidate(
-                candidates, file_path, archive_name,
-                "case-insensitive filename match", 60
+                candidates, row,
+                "case-insensitive filename match",
+                60 + bonus,
             )
 
         # --- Strategy 6: Fuzzy filename match (20–50%) ---
         if self.fuzzy and len(candidates) < self.max_candidates:
             fuzzy_results = self._fuzzy_search(target_name_lower)
-            for file_path, archive_name, ratio in fuzzy_results:
-                confidence = int(ratio * 50)  # ratio 0.6–1.0 → confidence 30–50
+            for row, ratio in fuzzy_results:
+                confidence = int(ratio * 50)
+                same_archive = (row.archive == self.input_dir.name)
+                bonus = _date_proximity_bonus(
+                    self._target_archive_date, row.archive_date, same_archive
+                )
                 self._add_candidate(
-                    candidates, file_path, archive_name,
-                    f"fuzzy match (similarity {ratio:.0%})", confidence
+                    candidates, row,
+                    f"fuzzy match (similarity {ratio:.0%})",
+                    confidence + bonus,
                 )
 
-        # Sort by confidence descending, then by archive name for stability
+        # Count total versions of this filename across all archives
+        total_versions = self._index.count_by_filename(target_name_lower)
+
+        # Attach total_versions to all candidates
+        for c in candidates.values():
+            c.total_versions = total_versions
+
+        # Sort by confidence descending, then by archive date proximity,
+        # then by archive name for stability
         sorted_candidates = sorted(
             candidates.values(),
             key=lambda c: (-c.confidence, c.archive_folder, str(c.local_path))
@@ -283,8 +385,7 @@ class ReplacementSearcher:
     def _add_candidate(
         self,
         candidates: dict,
-        file_path: Path,
-        archive_name: str,
+        row: FileRow,
         match_type: str,
         confidence: int,
     ) -> None:
@@ -292,22 +393,21 @@ class ReplacementSearcher:
         Add a candidate to the dict, keeping only the highest-confidence
         entry per unique file path.
         """
-        existing = candidates.get(file_path)
+        abs_path_str = row.abs_path
+        existing = candidates.get(abs_path_str)
         if existing is None or existing.confidence < confidence:
-            candidates[file_path] = Candidate(
-                local_path=file_path,
-                public_url=self._build_public_url(file_path),
-                archive_folder=archive_name,
+            candidates[abs_path_str] = Candidate(
+                local_path=Path(row.abs_path),
+                public_url=self._build_public_url(Path(row.abs_path)),
+                archive_folder=row.archive,
+                archive_date=row.archive_date,
                 match_type=match_type,
-                confidence=confidence,
+                confidence=min(confidence, 100),  # cap at 100
             )
 
     def _build_public_url(self, file_path: Path) -> Optional[str]:
         """
         Construct a public URL for a candidate file using search_base_url.
-
-        URL construction: search_base_url + relative_path_from_search_dir
-        e.g. https://example.org/mirror/archives/ + archive-2001/images/logo.gif
         """
         if not self.search_base_url:
             return None
@@ -318,23 +418,34 @@ class ReplacementSearcher:
         except ValueError:
             return None
 
-    def _fuzzy_search(self, target_lower: str) -> list[tuple[Path, str, float]]:
+    def _fuzzy_search(self, target_lower: str) -> list[tuple[FileRow, float]]:
         """
         Search for files with similar names using difflib SequenceMatcher.
 
         Only returns matches with ratio ≥ 0.6.
-
-        Returns list of (file_path, archive_name, ratio).
+        Builds a cache of all distinct filenames on first call.
         """
-        results = []
-        for lower_name, entries in self._index_by_name.items():
-            ratio = SequenceMatcher(None, target_lower, lower_name).ratio()
-            if ratio >= 0.6 and lower_name != target_lower:
-                for file_path, archive_name in entries:
-                    results.append((file_path, archive_name, ratio))
+        if self._fuzzy_cache is None:
+            # Build a list of all distinct (filename, archive, archive_date)
+            # from the index for fuzzy comparison
+            conn = self._index._connect()
+            cur = conn.execute(
+                "SELECT DISTINCT filename, archive, archive_date FROM files"
+            )
+            self._fuzzy_cache = [(r[0], r[1], r[2]) for r in cur.fetchall()]
 
-        # Sort by ratio descending
-        results.sort(key=lambda x: -x[2])
+        results = []
+        for filename_lower, archive, archive_date in self._fuzzy_cache:
+            if filename_lower == target_lower:
+                continue
+            ratio = SequenceMatcher(None, target_lower, filename_lower).ratio()
+            if ratio >= 0.6:
+                # Fetch the actual file rows for this filename
+                rows = self._index.find_by_filename(filename_lower)
+                for row in rows:
+                    results.append((row, ratio))
+
+        results.sort(key=lambda x: -x[1])
         return results
 
     def search_all(self, broken_links: list[BrokenLink]) -> list[BrokenLink]:
@@ -358,8 +469,10 @@ class ReplacementSearcher:
         if not self._index_built:
             self.build_index()
 
-        self._print(f"      Searching for replacement candidates for "
-                    f"{len(broken_links)} broken link(s)...")
+        self._print(
+            f"      Searching for replacement candidates for "
+            f"{len(broken_links)} broken link(s)..."
+        )
 
         with_candidates = 0
         for broken in broken_links:
@@ -367,8 +480,14 @@ class ReplacementSearcher:
             if broken.candidates:
                 with_candidates += 1
 
-        self._print(f"      Found candidates for {with_candidates} of "
-                    f"{len(broken_links)} broken link(s).")
+        self._print(
+            f"      Found candidates for {with_candidates} of "
+            f"{len(broken_links)} broken link(s)."
+        )
+
+        # Close the index connection when done
+        if self._index:
+            self._index.close()
 
         return broken_links
 

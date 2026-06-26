@@ -134,6 +134,25 @@ Examples:
         default=False,
         help="Enable fuzzy filename matching for replacement candidates.",
     )
+    search_group.add_argument(
+        "--index-db",
+        metavar="FILE",
+        default=None,
+        help=(
+            "Path to the persistent SQLite file index database. "
+            "Defaults to search_index.db in the project root directory. "
+            "The index is built on the first run and updated incrementally on subsequent runs."
+        ),
+    )
+    search_group.add_argument(
+        "--rebuild-index",
+        action="store_true",
+        default=False,
+        help=(
+            "Force a full rebuild of the file index, ignoring cached directory mtimes. "
+            "Use this if files have been added or removed without updating directory timestamps."
+        ),
+    )
 
     # --- Output options ---
     output_group = parser.add_argument_group("Output options")
@@ -384,13 +403,23 @@ def run(argv=None) -> int:
     # Pipeline Step 4: Search for replacement candidates
     # =========================================================================
     if search_dir and broken_links:
+        # Resolve the index DB path (default: search_index.db in project root)
+        if args.index_db:
+            db_path = Path(args.index_db)
+        else:
+            # Project root = directory containing this package
+            project_root = Path(__file__).parent.parent
+            db_path = project_root / "search_index.db"
+
         searcher = ReplacementSearcher(
             search_dir=search_dir,
             input_dir=input_dir,
+            db_path=db_path,
             search_base_url=args.search_base_url,
             max_candidates=args.max_candidates,
             case_insensitive=case_insensitive,
             fuzzy=args.fuzzy,
+            force_rebuild=args.rebuild_index,
             verbose=verbose,
         )
         broken_links = searcher.search_all(broken_links)

@@ -74,6 +74,8 @@ python archive_validator.py --input-dir PATH [options]
 | `--search-dir PATH` | — | Root directory containing all archive folders. Each immediate subdirectory is treated as a separate archive. The input archive is excluded automatically. |
 | `--max-candidates N` | 5 | Maximum replacement candidates per broken link |
 | `--fuzzy` | off | Enable fuzzy filename matching for candidates |
+| `--index-db FILE` | `search_index.db` | Path to the persistent SQLite file index. Built on the first run, updated incrementally on subsequent runs. Defaults to `search_index.db` in the project root (not in the web root). |
+| `--rebuild-index` | off | Force a full rebuild of the file index, ignoring cached directory timestamps. Use this if files were added or removed without updating directory mtimes. |
 
 ### Output options
 
@@ -257,14 +259,42 @@ Matches `--base-url` → treated as internal → resolved to local path.
 
 When a broken link is found, the tool searches all other archive folders under `--search-dir` using these strategies (in priority order):
 
-| Strategy | Confidence | Example |
+| Strategy | Base Confidence | Example |
 |---|---|---|
 | Exact relative path in another archive | 95% | `images/logo.gif` found at same path in `archive-2001-03-15` |
 | Extension case difference | 80% | `logo.JPG` vs `logo.jpg` |
 | Exact filename match (different location) | 70% | `logo.gif` found anywhere in another archive |
 | URL-decoded filename match | 65% | `my%20file.jpg` matches `my file.jpg` |
 | Case-insensitive filename match | 60% | `Logo.GIF` matches `logo.gif` |
-| Fuzzy match (with `--fuzzy`) | 20-50% | `logoo.gif` is similar to `logo.gif` |
+| Fuzzy match (with `--fuzzy`) | 20–50% | `logoo.gif` is similar to `logo.gif` |
+
+### Date proximity bonus
+
+When archive folder names contain a date (e.g. `archive-2001-06-01`), a small bonus is added to break ties between equally-matched candidates:
+
+| Proximity | Bonus |
+|---|---|
+| Same archive, different subfolder | +5 |
+| Within 3 months of the target archive | +4 |
+| Within 1 year | +3 |
+| Within 2 years | +2 |
+| More than 2 years away | +0 |
+
+This means a file found in `archive-2001-03-15` will rank above the same file found in `archive-1998-09-01` when validating `archive-2001-06-01`.
+
+### Versions found
+
+The report shows how many total copies of a filename exist across all indexed archives (e.g. **6 versions found**). This helps you quickly assess whether a file is common across snapshots or unique to one period.
+
+### Performance: persistent SQLite index
+
+The file index is stored in `search_index.db` (project root) and updated incrementally:
+
+- **First run**: walks all archive folders and populates the database (~30s for 1M files)
+- **Subsequent runs**: checks directory mtimes — unchanged folders are skipped entirely (~0.1s)
+- **Changed folders**: only re-scanned folders are re-indexed
+
+Use `--rebuild-index` to force a full rescan if files were added without updating directory timestamps.
 
 ---
 
@@ -302,6 +332,7 @@ archive-updater/
 │   ├── resolver.py       # URL <-> filesystem path mapping logic
 │   ├── detector.py       # Dead link detection (file existence checks)
 │   ├── searcher.py       # Replacement candidate search engine
+│   ├── fileindex.py      # Persistent SQLite file index (incremental updates)
 │   ├── reporter.py       # HTML/JSON/CSV report generation
 │   └── wayback.py        # Wayback Machine candidate search (via Ruby gem)
 ├── templates/
@@ -310,6 +341,7 @@ archive-updater/
 │   └── ui.css            # Web UI stylesheet
 ├── archive_validator.py  # Top-level entry point (CLI)
 ├── web_ui.py             # Flask web front-end (includes /apply endpoint)
+├── search_index.db       # SQLite file index (auto-created on first run)
 ├── apply.log             # Append-only log of every file copy operation (auto-created)
 ├── wayback_staging/      # Downloaded Wayback files awaiting review (auto-created)
 ├── requirements.txt

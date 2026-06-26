@@ -122,13 +122,13 @@ class WaybackSearcher:
         self,
         original_url: str,
         input_dir: Path,
-        staging_dir: Path,
+        staging_dir: Optional[Path] = None,
         workers: int = 3,
         verbose: bool = True,
     ):
         self.original_url = original_url.rstrip("/") + "/"
         self.input_dir = input_dir.resolve()
-        self.staging_dir = staging_dir.resolve()
+        self.staging_dir = (staging_dir or Path("wayback_staging")).resolve()
         self.workers = workers
         self.verbose = verbose
 

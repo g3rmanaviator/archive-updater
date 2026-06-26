@@ -239,6 +239,12 @@ footer { margin-top: 30px; text-align: center; color: #aaa; font-size: 0.8em; }
     background: #3949ab; color: #fff; font-size: 0.75em; font-weight: 700;
     margin-right: 4px; vertical-align: middle;
 }
+/* Versions found badge */
+.versions-badge {
+    display: inline-block; padding: 1px 6px; border-radius: 10px;
+    background: #e3f2fd; color: #1565c0; font-size: 0.78em; font-weight: 600;
+    margin-left: 2px;
+}
 """
 
 # Inline JavaScript for filtering and sorting
@@ -518,12 +524,26 @@ def generate_html_report(
                         'data-dst="' + _e(str(b.expected_path)) + '" '
                         'onclick="applyCandidate(this)">&#10003; Apply</button>'
                     )
+                # Build meta line: archive • date • match type • confidence • versions
+                meta_parts = [_e(c.archive_folder)]
+                archive_date = getattr(c, "archive_date", None)
+                if archive_date:
+                    meta_parts.append(_e(archive_date))
+                meta_parts.append(_e(c.match_type))
+                meta_parts.append(str(c.confidence) + "%")
+                total_versions = getattr(c, "total_versions", 0)
+                if total_versions > 1:
+                    meta_parts.append(
+                        '<span class="versions-badge">'
+                        + str(total_versions) + ' versions found'
+                        + '</span>'
+                    )
                 cand_parts.append(
                     '<div class="candidate">'
                     + bar + link_html
                     + apply_btn
                     + '<div class="cand-meta">'
-                    + _e(c.archive_folder) + ' &bull; ' + _e(c.match_type) + ' &bull; ' + str(c.confidence) + '%'
+                    + ' &bull; '.join(meta_parts)
                     + '</div></div>'
                 )
             cand_cell = "\n".join(cand_parts)
