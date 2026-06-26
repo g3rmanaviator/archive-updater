@@ -154,6 +154,55 @@
     </div>
   </div>
 
+  <!-- ── Wayback Machine ───────────────────────────────────────────────── -->
+  <div class="form-card">
+    <div class="section-label">Wayback Machine</div>
+
+    <div class="field-group">
+      <label></label>
+      <div class="checkbox-row">
+        <input type="checkbox" id="wayback" name="wayback" value="1"
+               onchange="toggleWayback(this.checked)">
+        <label for="wayback">--wayback &mdash; Search web.archive.org for files with no local candidates</label>
+      </div>
+    </div>
+
+    <div id="wayback-fields" style="display:none">
+      <div class="field-group">
+        <label for="original_url">--original-url</label>
+        <div>
+          <input type="text" id="original_url" name="original_url" class="monospace"
+                 placeholder="http://www.stclares.ac.uk/">
+          <div class="hint">
+            Root URL of the original website. Used to construct Wayback Machine search URLs.
+            Required when Wayback search is enabled.
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label for="wayback_staging">--wayback-staging</label>
+        <div>
+          <input type="text" id="wayback_staging" name="wayback_staging" class="monospace"
+                 placeholder="wayback_staging" value="wayback_staging">
+          <div class="hint">
+            Directory where files downloaded from the Wayback Machine are staged for review
+            before being applied to the archive.
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label for="wayback_workers">--wayback-workers</label>
+        <div>
+          <input type="number" id="wayback_workers" name="wayback_workers"
+                 value="3" min="1" max="10" style="width:80px">
+          <div class="hint">Concurrent Wayback searches (default: 3). Keep low to avoid rate limiting.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Case Sensitivity & Other ──────────────────────────────────────── -->
   <div class="form-card">
     <div class="section-label">Other Options</div>
@@ -221,6 +270,11 @@
   var btnReport   = document.getElementById('btn-view-report');
 
   var evtSource = null;
+
+  // ── Wayback toggle ──────────────────────────────────────────────────────
+  window.toggleWayback = function (checked) {
+    document.getElementById('wayback-fields').style.display = checked ? '' : 'none';
+  };
 
   // ── Pattern list helpers ────────────────────────────────────────────────
   window.addPattern = function () {

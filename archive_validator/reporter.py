@@ -201,6 +201,44 @@ td.candidates { min-width: 200px; }
 }
 .no-results.success { color: #2e7d32; font-size: 1.1em; }
 footer { margin-top: 30px; text-align: center; color: #aaa; font-size: 0.8em; }
+/* Apply button */
+.btn-apply {
+    display: inline-block; margin-left: 8px; padding: 2px 8px;
+    background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7;
+    border-radius: 4px; cursor: pointer; font-size: 0.8em; font-weight: 600;
+    vertical-align: middle; white-space: nowrap;
+}
+.btn-apply:hover { background: #c8e6c9; }
+.btn-apply:disabled { background: #f5f5f5; color: #aaa; border-color: #ddd; cursor: not-allowed; }
+.btn-apply.applied { background: #1565c0; color: #fff; border-color: #1565c0; cursor: default; }
+/* Apply confirmation panel */
+.apply-confirm {
+    margin-top: 6px; padding: 8px 10px;
+    background: #fff8e1; border: 1px solid #ffcc80; border-radius: 4px;
+    font-size: 0.82em;
+}
+.apply-confirm .apply-paths { font-family: monospace; font-size: 0.9em; color: #333; margin: 4px 0 8px; }
+.apply-confirm .apply-actions { display: flex; gap: 8px; }
+.btn-confirm-apply {
+    padding: 4px 12px; background: #1565c0; color: #fff;
+    border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em; font-weight: 600;
+}
+.btn-confirm-apply:hover { background: #0d47a1; }
+.btn-cancel-apply {
+    padding: 4px 10px; background: #fff; color: #555;
+    border: 1px solid #ccc; border-radius: 4px; cursor: pointer; font-size: 0.85em;
+}
+.apply-result { margin-top: 5px; font-size: 0.82em; font-weight: 600; }
+.apply-result.ok { color: #2e7d32; }
+.apply-result.err { color: #c62828; }
+/* Wayback candidate */
+.wayback-candidate { background: #e8eaf6; border-left-color: #7986cb; }
+.wayback-candidate a { color: #283593; }
+.wayback-badge {
+    display: inline-block; padding: 1px 6px; border-radius: 10px;
+    background: #3949ab; color: #fff; font-size: 0.75em; font-weight: 700;
+    margin-right: 4px; vertical-align: middle;
+}
 """
 
 # Inline JavaScript for filtering and sorting
@@ -271,6 +309,81 @@ REPORT_JS = """\
             });
         });
     });
+
+    // ── Apply candidate ────────────────────────────────────────────────────
+    window.applyCandidate = function(btn) {
+        var src = btn.getAttribute('data-src');
+        var dst = btn.getAttribute('data-dst');
+        var candidateDiv = btn.closest('.candidate');
+
+        // Remove any existing confirmation panel
+        var existing = candidateDiv.querySelector('.apply-confirm');
+        if (existing) { existing.remove(); return; }
+
+        // Build confirmation panel
+        var panel = document.createElement('div');
+        panel.className = 'apply-confirm';
+        panel.innerHTML =
+            '<strong>Copy file to archive?</strong>' +
+            '<div class="apply-paths">' +
+            'From: ' + escHtml(src) + '<br>' +
+            'To:&nbsp;&nbsp; ' + escHtml(dst) +
+            '</div>' +
+            '<div class="apply-actions">' +
+            '<button class="btn-cancel-apply" onclick="this.closest(\'.apply-confirm\').remove()">Cancel</button>' +
+            '<button class="btn-confirm-apply">&#10003; Confirm Copy</button>' +
+            '</div>' +
+            '<div class="apply-result"></div>';
+
+        candidateDiv.appendChild(panel);
+
+        panel.querySelector('.btn-confirm-apply').addEventListener('click', function() {
+            var confirmBtn = this;
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = 'Copying\u2026';
+
+            fetch('/apply', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({src: src, dst: dst})
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var resultEl = panel.querySelector('.apply-result');
+                if (data.ok) {
+                    resultEl.className = 'apply-result ok';
+                    resultEl.textContent = '\u2713 ' + data.message;
+                    btn.className = 'btn-apply applied';
+                    btn.disabled = true;
+                    btn.textContent = '\u2713 Applied';
+                    // Remove cancel button
+                    var cancelBtn = panel.querySelector('.btn-cancel-apply');
+                    if (cancelBtn) cancelBtn.remove();
+                    confirmBtn.remove();
+                } else {
+                    resultEl.className = 'apply-result err';
+                    resultEl.textContent = '\u2717 ' + data.message;
+                    confirmBtn.disabled = false;
+                    confirmBtn.textContent = '\u2713 Confirm Copy';
+                }
+            })
+            .catch(function(err) {
+                var resultEl = panel.querySelector('.apply-result');
+                resultEl.className = 'apply-result err';
+                resultEl.textContent = '\u2717 Request failed: ' + err;
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = '\u2713 Confirm Copy';
+            });
+        });
+    };
+
+    function escHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
 })();
 """
 
@@ -395,16 +508,51 @@ def generate_html_report(
                     link_html = '<a href="' + _e(c.public_url) + '" target="_blank">' + _e(c.public_url) + '</a>'
                 else:
                     link_html = _e(str(c.local_path))
+                # Apply button — only shown when report is served via Flask web UI
+                # and the expected path is known (so we have a dst)
+                apply_btn = ""
+                if b.expected_path:
+                    apply_btn = (
+                        '<button class="btn-apply" '
+                        'data-src="' + _e(str(c.local_path)) + '" '
+                        'data-dst="' + _e(str(b.expected_path)) + '" '
+                        'onclick="applyCandidate(this)">&#10003; Apply</button>'
+                    )
                 cand_parts.append(
                     '<div class="candidate">'
                     + bar + link_html
+                    + apply_btn
                     + '<div class="cand-meta">'
                     + _e(c.archive_folder) + ' &bull; ' + _e(c.match_type) + ' &bull; ' + str(c.confidence) + '%'
                     + '</div></div>'
                 )
             cand_cell = "\n".join(cand_parts)
         else:
-            cand_cell = '<span class="no-candidates">No candidates found</span>'
+            # Check for a Wayback candidate attached to this broken link
+            wayback_cand = getattr(b, "wayback_candidate", None)
+            if wayback_cand:
+                bar = _confidence_bar(wayback_cand.confidence)
+                link_html = '<a href="' + _e(wayback_cand.wayback_url) + '" target="_blank">' + _e(wayback_cand.wayback_url) + '</a>'
+                apply_btn = ""
+                if b.expected_path:
+                    apply_btn = (
+                        '<button class="btn-apply" '
+                        'data-src="' + _e(str(wayback_cand.staged_path)) + '" '
+                        'data-dst="' + _e(str(b.expected_path)) + '" '
+                        'onclick="applyCandidate(this)">&#10003; Apply</button>'
+                    )
+                cand_cell = (
+                    '<div class="candidate wayback-candidate">'
+                    + '<span class="wayback-badge">&#127760; Wayback</span> '
+                    + bar + link_html
+                    + apply_btn
+                    + '<div class="cand-meta">'
+                    + _e(wayback_cand.archive_folder) + ' &bull; ' + _e(wayback_cand.match_type)
+                    + ' &bull; ' + str(wayback_cand.confidence) + '%'
+                    + '</div></div>'
+                )
+            else:
+                cand_cell = '<span class="no-candidates">No candidates found</span>'
 
         # Data attributes for filtering
         archive_attr = b.candidates[0].archive_folder if b.candidates else ""

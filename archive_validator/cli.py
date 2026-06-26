@@ -27,6 +27,7 @@ from .extractor import LinkExtractor
 from .reporter import ReportSummary, generate_csv_report, generate_html_report, generate_json_report
 from .resolver import URLResolver
 from .searcher import ReplacementSearcher
+from .wayback import WaybackSearcher
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -203,6 +204,45 @@ Examples:
         help="Also check external HTTP links (uses HTTP HEAD/GET requests).",
     )
 
+    # --- Wayback Machine options ---
+    wayback_group = parser.add_argument_group("Wayback Machine options")
+    wayback_group.add_argument(
+        "--wayback",
+        action="store_true",
+        default=False,
+        help=(
+            "Search the Wayback Machine (web.archive.org) for broken links "
+            "that have no local candidates. Requires the "
+            "'wayback_machine_downloader' Ruby gem to be installed."
+        ),
+    )
+    wayback_group.add_argument(
+        "--original-url",
+        metavar="URL",
+        default=None,
+        help=(
+            "Root URL of the original website, used to construct Wayback Machine "
+            "search URLs. Required when --wayback is set. "
+            "Example: http://www.stclares.ac.uk/"
+        ),
+    )
+    wayback_group.add_argument(
+        "--wayback-staging",
+        metavar="PATH",
+        default="wayback_staging",
+        help=(
+            "Directory where files downloaded from the Wayback Machine are staged "
+            "for review before being applied to the archive (default: wayback_staging)."
+        ),
+    )
+    wayback_group.add_argument(
+        "--wayback-workers",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Number of concurrent Wayback Machine searches (default: 3).",
+    )
+
     # --- Verbosity ---
     parser.add_argument(
         "--quiet",
@@ -278,6 +318,13 @@ def run(argv=None) -> int:
         print(f"[ERROR] Cannot create output directory for '{output_path}': {e}", file=sys.stderr)
         return 2
 
+    # --- Validate Wayback options ---
+    if args.wayback and not args.original_url:
+        print("[ERROR] --wayback requires --original-url to be set.", file=sys.stderr)
+        return 2
+
+    wayback_staging = Path(args.wayback_staging) if args.wayback else None
+
     # --- Print startup info ---
     if verbose:
         print(f"archive-validator {__version__}", file=sys.stderr)
@@ -288,6 +335,9 @@ def run(argv=None) -> int:
             print(f"Search dir    : {search_dir}", file=sys.stderr)
         if args.search_base_url:
             print(f"Search URL    : {args.search_base_url}", file=sys.stderr)
+        if args.wayback:
+            print(f"Wayback URL   : {args.original_url}", file=sys.stderr)
+            print(f"Wayback stage : {wayback_staging}", file=sys.stderr)
         print(f"Output        : {output_path}", file=sys.stderr)
         print("", file=sys.stderr)
 
@@ -346,6 +396,33 @@ def run(argv=None) -> int:
         broken_links = searcher.search_all(broken_links)
     elif broken_links and not search_dir and verbose:
         print("      (No --search-dir provided; skipping candidate search.)", file=sys.stderr)
+
+    # =========================================================================
+    # Pipeline Step 4.5: Wayback Machine search (for links with no local candidates)
+    # =========================================================================
+    wayback_searcher = None
+    if args.wayback and broken_links:
+        no_candidates = [b for b in broken_links if not b.candidates and not b.is_external]
+        if no_candidates:
+            if verbose:
+                print(
+                    f"[3.5/4] Searching Wayback Machine for "
+                    f"{len(no_candidates)} link(s) with no local candidates...",
+                    file=sys.stderr,
+                )
+            wayback_searcher = WaybackSearcher(
+                original_url=args.original_url,
+                input_dir=input_dir,
+                staging_dir=wayback_staging,
+                workers=args.wayback_workers,
+                verbose=verbose,
+            )
+            wayback_searcher.search_all(broken_links)
+        elif verbose:
+            print(
+                "      (All broken links have local candidates; skipping Wayback search.)",
+                file=sys.stderr,
+            )
 
     # =========================================================================
     # Pipeline Step 5: Generate reports

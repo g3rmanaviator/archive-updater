@@ -270,6 +270,13 @@ input[type="text"].monospace {
     margin-bottom: 14px;
 }
 
+/* ── Wayback Machine section ─────────────────────────────────────────────── */
+#wayback-fields {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed #e0e0e0;
+}
+
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 640px) {
     .field-group {

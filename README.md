@@ -97,6 +97,17 @@ python archive_validator.py --input-dir PATH [options]
 | `--case-insensitive` | Force case-insensitive filename matching |
 | `--case-sensitive` | Force case-sensitive matching (Linux default) |
 
+### Wayback Machine options
+
+| Argument | Default | Description |
+|---|---|---|
+| `--wayback` | off | Search the Wayback Machine for broken links with no local candidates. Requires the `wayback_machine_downloader` Ruby gem (`gem install wayback_machine_downloader`). |
+| `--original-url URL` | — | Root URL of the original website. Required with `--wayback`. Example: `http://www.stclares.ac.uk/` |
+| `--wayback-staging PATH` | `wayback_staging` | Directory where Wayback downloads are staged for review before being applied to the archive |
+| `--wayback-workers N` | 3 | Concurrent Wayback searches (keep low to avoid rate limiting) |
+
+When `--wayback` is enabled, any broken link with no local candidates is searched on the Internet Archive. Matching files are downloaded to `--wayback-staging` and appear in the report as **🌐 Wayback** candidates with an **✓ Apply** button, identical to local candidates.
+
 ### Other options
 
 | Argument | Description |
@@ -291,13 +302,16 @@ archive-updater/
 │   ├── resolver.py       # URL <-> filesystem path mapping logic
 │   ├── detector.py       # Dead link detection (file existence checks)
 │   ├── searcher.py       # Replacement candidate search engine
-│   └── reporter.py       # HTML/JSON/CSV report generation
+│   ├── reporter.py       # HTML/JSON/CSV report generation
+│   └── wayback.py        # Wayback Machine candidate search (via Ruby gem)
 ├── templates/
 │   └── index.html        # Web UI form template
 ├── static/
 │   └── ui.css            # Web UI stylesheet
 ├── archive_validator.py  # Top-level entry point (CLI)
-├── web_ui.py             # Flask web front-end
+├── web_ui.py             # Flask web front-end (includes /apply endpoint)
+├── apply.log             # Append-only log of every file copy operation (auto-created)
+├── wayback_staging/      # Downloaded Wayback files awaiting review (auto-created)
 ├── requirements.txt
 ├── README.md
 └── DESIGN.md             # Architecture and design decisions
@@ -330,6 +344,8 @@ Then open **http://127.0.0.1:5000** in your browser.
 - Result banner on completion: ✓ clean / ⚠ broken links found / ✕ error
 - **View Report** button that opens the generated HTML report directly in the browser
 - Dynamic ignore-pattern list (add/remove rows)
+- **✓ Apply** button on each candidate — click to review the copy operation (From/To paths), then confirm to copy the file into the archive. Every copy is logged to `apply.log`.
+- **🌐 Wayback** candidates appear identically to local candidates and support the same Apply workflow
 
 ### Security note
 

@@ -17,14 +17,20 @@ authentication, as it can execute commands on the server filesystem.
 """
 
 import json
+import logging
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, Response, render_template, request, send_file, stream_with_context
+
+# Apply log file (append-only record of every copy operation)
+APPLY_LOG = Path(__file__).parent / "apply.log"
 
 app = Flask(__name__)
 
@@ -132,6 +138,18 @@ def run_job():
         if request.form.get("external"):
             cmd.append("--external")
 
+        # Wayback Machine options
+        original_url = request.form.get("original_url", "").strip()
+        if request.form.get("wayback") and original_url:
+            cmd.append("--wayback")
+            cmd += ["--original-url", original_url]
+            wayback_staging = request.form.get("wayback_staging", "wayback_staging").strip()
+            if wayback_staging:
+                cmd += ["--wayback-staging", wayback_staging]
+            wayback_workers = request.form.get("wayback_workers", "3").strip()
+            if wayback_workers and wayback_workers != "3":
+                cmd += ["--wayback-workers", wayback_workers]
+
         # Never pass --quiet so we always get progress output
         # (the UI shows it live)
 
@@ -238,6 +256,80 @@ def _run_subprocess(cmd: list[str]) -> None:
     finally:
         _job_running = False
         _job_output_queue.put(None)  # Sentinel
+
+
+# ---------------------------------------------------------------------------
+# Apply endpoint — copy a candidate file to the archive
+# ---------------------------------------------------------------------------
+
+@app.route("/apply", methods=["POST"])
+def apply_candidate():
+    """
+    Copy a candidate file to the expected (broken) path.
+
+    Request JSON: { "src": "/abs/path/to/candidate", "dst": "/abs/path/to/expected" }
+    Response JSON: { "ok": bool, "message": str }
+
+    Safety:
+    - Both paths must be absolute
+    - src must exist and be a file
+    - dst must not already exist (prevents silent overwrites)
+    - dst parent directory is created if needed
+    - Every operation is logged to apply.log
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    src_str = data.get("src", "").strip()
+    dst_str = data.get("dst", "").strip()
+
+    if not src_str or not dst_str:
+        return {"ok": False, "message": "Both 'src' and 'dst' are required."}, 400
+
+    src = Path(src_str)
+    dst = Path(dst_str)
+
+    # Validate source
+    if not src.is_absolute():
+        return {"ok": False, "message": f"src must be an absolute path: {src}"}, 400
+    if not src.exists():
+        return {"ok": False, "message": f"Source file not found: {src}"}, 404
+    if not src.is_file():
+        return {"ok": False, "message": f"Source is not a file: {src}"}, 400
+
+    # Validate destination
+    if not dst.is_absolute():
+        return {"ok": False, "message": f"dst must be an absolute path: {dst}"}, 400
+    if dst.exists():
+        return {
+            "ok": False,
+            "message": f"Destination already exists: {dst}. Remove it first if you want to replace it."
+        }, 409
+
+    # Create parent directories
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return {"ok": False, "message": f"Cannot create destination directory: {e}"}, 500
+
+    # Copy the file (preserves timestamps)
+    try:
+        shutil.copy2(str(src), str(dst))
+    except OSError as e:
+        return {"ok": False, "message": f"Copy failed: {e}"}, 500
+
+    # Log the operation
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"[{timestamp}] COPY {src} -> {dst}\n"
+    try:
+        with open(APPLY_LOG, "a", encoding="utf-8") as f:
+            f.write(log_entry)
+    except OSError:
+        pass  # Log failure is non-fatal
+
+    return {
+        "ok": True,
+        "message": f"Copied successfully to {dst}",
+        "dst": str(dst),
+    }
 
 
 # ---------------------------------------------------------------------------
