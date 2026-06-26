@@ -25,6 +25,42 @@ from .searcher import Candidate
 
 
 # ---------------------------------------------------------------------------
+# Deduplication helper (defined early — used by ReportSummary and reporter)
+# ---------------------------------------------------------------------------
+
+def _dedup_broken_links(broken_links: list) -> list:
+    """
+    Deduplicate broken links by their resolved expected_path + link_type.
+
+    Multiple source pages referencing the same missing file are collapsed
+    into a single entry. Returns a list of
+    (representative_BrokenLink, sources_list) tuples, where sources_list
+    is a list of (source_url, source_file, raw_href) for every reference
+    that pointed to this target.
+
+    External links (no expected_path) are keyed by raw_href instead.
+    """
+    from collections import OrderedDict
+
+    groups: OrderedDict = OrderedDict()
+
+    for b in broken_links:
+        if b.is_external:
+            key = ("__external__:" + b.raw_href, b.link_type)
+        else:
+            key = (str(b.expected_path) if b.expected_path else b.raw_href, b.link_type)
+
+        if key not in groups:
+            groups[key] = {
+                "representative": b,
+                "sources": [],
+            }
+        groups[key]["sources"].append((b.source_url, b.source_file, b.raw_href))
+
+    return [(g["representative"], g["sources"]) for g in groups.values()]
+
+
+# ---------------------------------------------------------------------------
 # Summary statistics class
 # ---------------------------------------------------------------------------
 
@@ -38,7 +74,7 @@ class ReportSummary:
         html_files: list,
         total_links: int,
         broken_links: list,
-        generated_at: datetime = None,
+        generated_at: Optional[datetime] = None,
     ):
         self.input_dir = input_dir
         self.base_url = base_url
@@ -47,7 +83,7 @@ class ReportSummary:
         self.broken_links = broken_links
         self.generated_at = generated_at or datetime.now()
 
-        # Counts by type
+        # Counts by type (raw — includes duplicate references to the same missing file)
         self.broken_total = len(broken_links)
         self.broken_images = sum(1 for b in broken_links if b.link_type == "image")
         self.broken_pages = sum(1 for b in broken_links if b.link_type == "page")
@@ -60,6 +96,11 @@ class ReportSummary:
         )
         self.broken_external = sum(1 for b in broken_links if b.is_external)
         self.with_candidates = sum(1 for b in broken_links if b.candidates)
+
+        # Deduplicated counts (unique missing files/targets)
+        deduped = _dedup_broken_links(broken_links)
+        self.unique_broken_total = len(deduped)
+        self.unique_with_candidates = sum(1 for b, _ in deduped if b.candidates)
 
 
 # ---------------------------------------------------------------------------
@@ -280,25 +321,49 @@ def generate_html_report(
     output_path : Path
     """
 
-    # Collect unique values for filter dropdowns
-    all_types = sorted(set(b.link_type for b in broken_links))
+    # Deduplicate: collapse multiple references to the same missing file
+    deduped = _dedup_broken_links(broken_links)
+
+    # Collect unique values for filter dropdowns (from deduplicated set)
+    all_types = sorted(set(b.link_type for b, _ in deduped))
     all_archives = sorted(set(
         c.archive_folder
-        for b in broken_links
+        for b, _ in deduped
         for c in b.candidates
     ))
 
     # Build the broken links table rows
     rows_html = []
-    for b in broken_links:
-        # Source cell
-        if b.source_url:
-            source_cell = '<a href="' + _e(b.source_url) + '" target="_blank">' + _e(b.source_url) + '</a>'
-        else:
-            source_cell = _e(str(b.source_file))
+    for b, sources in deduped:
+        # Source cell — list all pages that referenced this missing target
+        source_parts = []
+        seen_sources = set()
+        for src_url, src_file, src_href in sources:
+            display = src_url or str(src_file)
+            if display in seen_sources:
+                continue
+            seen_sources.add(display)
+            if src_url:
+                source_parts.append(
+                    '<a href="' + _e(src_url) + '" target="_blank">' + _e(src_url) + '</a>'
+                )
+            else:
+                source_parts.append(_e(str(src_file)))
+        source_cell = "<br>".join(source_parts)
 
-        # Broken link cell
-        broken_cell = _e(b.raw_href)
+        # Broken link cell — show unique hrefs used to reference this target
+        seen_hrefs = []
+        for _, _, src_href in sources:
+            if src_href not in seen_hrefs:
+                seen_hrefs.append(src_href)
+        broken_cell = "<br>".join(_e(h) for h in seen_hrefs)
+
+        # Reference count badge (only shown when > 1 source)
+        if len(seen_sources) > 1:
+            source_cell = (
+                '<span style="font-size:0.78em;color:#1565c0;font-weight:600">'
+                + str(len(seen_sources)) + ' pages</span><br>' + source_cell
+            )
 
         # Expected path cell — hyperlink it when base_url is available
         if b.expected_path and summary.base_url and summary.input_dir:
@@ -365,17 +430,18 @@ def generate_html_report(
     )
 
     # Summary cards
-    ok_cls = "ok" if summary.broken_total == 0 else "warn"
+    ok_cls = "ok" if summary.unique_broken_total == 0 else "warn"
     cards_html = "".join([
         _card(summary.html_file_count, "HTML Files Scanned", "info"),
         _card(summary.total_links, "Links Checked", "info"),
-        _card(summary.broken_total, "Broken Links", ok_cls),
+        _card(summary.unique_broken_total, "Unique Missing Files", ok_cls),
+        _card(summary.broken_total, "Total References", "warn" if summary.broken_total else "ok"),
         _card(summary.broken_images, "Broken Images", "warn" if summary.broken_images else "ok"),
         _card(summary.broken_pages, "Broken Pages", "warn" if summary.broken_pages else "ok"),
         _card(summary.broken_css + summary.broken_js, "Broken CSS/JS",
               "warn" if (summary.broken_css + summary.broken_js) else "ok"),
         _card(summary.broken_frames, "Broken Frames", "warn" if summary.broken_frames else "ok"),
-        _card(summary.with_candidates, "With Candidates", "info"),
+        _card(summary.unique_with_candidates, "With Candidates", "info"),
     ])
 
     # No-results message or full table

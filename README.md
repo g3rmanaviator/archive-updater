@@ -292,11 +292,48 @@ archive-updater/
 │   ├── detector.py       # Dead link detection (file existence checks)
 │   ├── searcher.py       # Replacement candidate search engine
 │   └── reporter.py       # HTML/JSON/CSV report generation
-├── archive_validator.py  # Top-level entry point
+├── templates/
+│   └── index.html        # Web UI form template
+├── static/
+│   └── ui.css            # Web UI stylesheet
+├── archive_validator.py  # Top-level entry point (CLI)
+├── web_ui.py             # Flask web front-end
 ├── requirements.txt
 ├── README.md
 └── DESIGN.md             # Architecture and design decisions
 ```
+
+---
+
+## Web UI
+
+A browser-based front-end is available as an alternative to the CLI. It mirrors the look and feel of the report page and streams live progress output as the job runs.
+
+### Setup
+
+```bash
+pip install flask
+```
+
+### Start the server
+
+```bash
+python web_ui.py
+```
+
+Then open **http://127.0.0.1:5000** in your browser.
+
+### Features
+
+- Form fields for every CLI option, grouped and labelled the same way as this README
+- Live progress log — streams the validator's output in real time as it runs
+- Result banner on completion: ✓ clean / ⚠ broken links found / ✕ error
+- **View Report** button that opens the generated HTML report directly in the browser
+- Dynamic ignore-pattern list (add/remove rows)
+
+### Security note
+
+The web UI runs commands on the server filesystem. It binds to `127.0.0.1:5000` by default and should only be accessed over a trusted network or SSH tunnel. Do not expose it to the public internet without adding authentication.
 
 ---
 

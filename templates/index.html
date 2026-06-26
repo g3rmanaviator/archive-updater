@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Archive Validator</title>
+  <link rel="stylesheet" href="/static/ui.css">
+</head>
+<body>
+
+<h1>Archive Validator</h1>
+<p class="meta">Configure and run a validation job. Progress streams live below.</p>
+
+<form id="validator-form" autocomplete="off">
+
+  <!-- ── Required ──────────────────────────────────────────────────────── -->
+  <div class="form-card">
+    <div class="section-label">Required</div>
+
+    <div class="field-group">
+      <label for="input_dir">--input-dir</label>
+      <div>
+        <input type="text" id="input_dir" name="input_dir" class="monospace"
+               placeholder="/htdocs/alumni/mirror/archives/archive-1998-06-01" required>
+        <div class="hint">Archive snapshot directory to validate.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── URL Options ───────────────────────────────────────────────────── -->
+  <div class="form-card">
+    <div class="section-label">URL Options</div>
+
+    <div class="field-group">
+      <label for="base_url">--base-url</label>
+      <div>
+        <input type="text" id="base_url" name="base_url" class="monospace"
+               placeholder="https://example.org/mirror/archives/archive-1998-06-01/">
+        <div class="hint">
+          Public URL for the input archive. Enables clickable source links, expected-path
+          hyperlinks, and recognition of absolute URLs as internal.
+        </div>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <label for="search_base_url">--search-base-url</label>
+      <div>
+        <input type="text" id="search_base_url" name="search_base_url" class="monospace"
+               placeholder="https://example.org/mirror/archives/">
+        <div class="hint">
+          Public URL prefix for --search-dir. Enables clickable replacement candidate links.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Candidate Search ──────────────────────────────────────────────── -->
+  <div class="form-card">
+    <div class="section-label">Candidate Search</div>
+
+    <div class="field-group">
+      <label for="search_dir">--search-dir</label>
+      <div>
+        <input type="text" id="search_dir" name="search_dir" class="monospace"
+               placeholder="/htdocs/alumni/mirror/archives">
+        <div class="hint">
+          Root directory containing all archive folders. Each immediate subdirectory is
+          treated as a separate archive. The input archive is excluded automatically.
+        </div>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <label for="max_candidates">--max-candidates</label>
+      <div>
+        <input type="number" id="max_candidates" name="max_candidates"
+               value="5" min="1" max="50" style="width:80px">
+        <div class="hint">Maximum replacement candidates per broken link (default: 5).</div>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <label></label>
+      <div class="checkbox-row">
+        <input type="checkbox" id="fuzzy" name="fuzzy" value="1">
+        <label for="fuzzy">--fuzzy &mdash; Enable fuzzy filename matching for candidates</label>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Output ────────────────────────────────────────────────────────── -->
+  <div class="form-card">
+    <div class="section-label">Output</div>
+
+    <div class="field-group">
+      <label for="output">--output</label>
+      <div>
+        <input type="text" id="output" name="output" class="monospace"
+               placeholder="report.html" value="report.html">
+        <div class="hint">HTML report output path (default: report.html).</div>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <label for="json_output">--json-output</label>
+      <div>
+        <input type="text" id="json_output" name="json_output" class="monospace"
+               placeholder="report.json (optional)">
+        <div class="hint">Also export results as JSON to this path.</div>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <label for="csv_output">--csv-output</label>
+      <div>
+        <input type="text" id="csv_output" name="csv_output" class="monospace"
+               placeholder="report.csv (optional)">
+        <div class="hint">Also export results as CSV to this path.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Filtering ─────────────────────────────────────────────────────── -->
+  <div class="form-card">
+    <div class="section-label">Filtering</div>
+
+    <div class="field-group">
+      <label for="include_ext">--include-ext</label>
+      <div>
+        <input type="text" id="include_ext" name="include_ext" class="monospace"
+               placeholder=".html,.htm,.jpg,.gif,.png,.css,.js (optional)">
+        <div class="hint">
+          Comma-separated file extensions to check. Leave blank to check all link types.
+        </div>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <label>--ignore-pattern</label>
+      <div>
+        <div class="pattern-list" id="pattern-list">
+          <div class="pattern-row">
+            <input type="text" name="ignore_pattern" class="monospace"
+                   placeholder="e.g. cgi-bin">
+            <button type="button" class="btn-remove" onclick="removePattern(this)">✕ Remove</button>
+          </div>
+        </div>
+        <button type="button" class="btn-add-pattern" onclick="addPattern()">+ Add Pattern</button>
+        <div class="hint" style="margin-top:6px">
+          Regex patterns for hrefs to skip. Add one per row.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Case Sensitivity & Other ──────────────────────────────────────── -->
+  <div class="form-card">
+    <div class="section-label">Other Options</div>
+
+    <div class="field-group">
+      <label>Case sensitivity</label>
+      <div class="radio-group">
+        <label>
+          <input type="radio" name="case_mode" value=""> Default
+        </label>
+        <label>
+          <input type="radio" name="case_mode" value="insensitive"> --case-insensitive
+        </label>
+        <label>
+          <input type="radio" name="case_mode" value="sensitive"> --case-sensitive
+        </label>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <label></label>
+      <div class="checkbox-row">
+        <input type="checkbox" id="external" name="external" value="1">
+        <label for="external">--external &mdash; Also check external HTTP links (slower)</label>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Run bar ───────────────────────────────────────────────────────── -->
+  <div class="run-bar">
+    <button type="submit" class="btn-run" id="btn-run">&#9654; Run Validator</button>
+    <button type="button" class="btn-reset" id="btn-reset" onclick="resetForm()">Reset Form</button>
+    <span id="run-error"></span>
+  </div>
+
+</form>
+
+<!-- ── Live output ───────────────────────────────────────────────────────── -->
+<div id="output-section">
+  <h2>Progress</h2>
+  <div id="output-log" aria-live="polite" aria-label="Validator output"></div>
+
+  <div id="result-banner">
+    <span id="result-text"></span>
+    <a id="btn-view-report" class="btn-view-report" href="#" target="_blank"
+       style="display:none">View Report &#8594;</a>
+  </div>
+</div>
+
+<footer style="margin-top:30px;text-align:center;color:#aaa;font-size:0.8em">
+  archive-validator web UI
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  var form        = document.getElementById('validator-form');
+  var btnRun      = document.getElementById('btn-run');
+  var runError    = document.getElementById('run-error');
+  var outputSec   = document.getElementById('output-section');
+  var outputLog   = document.getElementById('output-log');
+  var resultBanner = document.getElementById('result-banner');
+  var resultText  = document.getElementById('result-text');
+  var btnReport   = document.getElementById('btn-view-report');
+
+  var evtSource = null;
+
+  // ── Pattern list helpers ────────────────────────────────────────────────
+  window.addPattern = function () {
+    var list = document.getElementById('pattern-list');
+    var row = document.createElement('div');
+    row.className = 'pattern-row';
+    row.innerHTML =
+      '<input type="text" name="ignore_pattern" class="monospace" placeholder="e.g. counter\\.gif">' +
+      '<button type="button" class="btn-remove" onclick="removePattern(this)">✕ Remove</button>';
+    list.appendChild(row);
+    row.querySelector('input').focus();
+  };
+
+  window.removePattern = function (btn) {
+    var list = document.getElementById('pattern-list');
+    var rows = list.querySelectorAll('.pattern-row');
+    if (rows.length === 1) {
+      // Keep at least one row; just clear it
+      rows[0].querySelector('input').value = '';
+    } else {
+      btn.closest('.pattern-row').remove();
+    }
+  };
+
+  // ── Reset form ──────────────────────────────────────────────────────────
+  window.resetForm = function () {
+    form.reset();
+    // Reset pattern list to one empty row
+    var list = document.getElementById('pattern-list');
+    list.innerHTML =
+      '<div class="pattern-row">' +
+      '<input type="text" name="ignore_pattern" class="monospace" placeholder="e.g. cgi-bin">' +
+      '<button type="button" class="btn-remove" onclick="removePattern(this)">✕ Remove</button>' +
+      '</div>';
+    // Hide output section
+    outputSec.style.display = 'none';
+    resultBanner.className = '';
+    resultBanner.style.display = 'none';
+    outputLog.innerHTML = '';
+    runError.textContent = '';
+    btnRun.disabled = false;
+  };
+
+  // ── Append a line to the log ────────────────────────────────────────────
+  function appendLine(text) {
+    var span = document.createElement('span');
+    span.className = 'log-line';
+    // Colour-code certain lines
+    if (/\[ERROR\]/i.test(text)) {
+      span.classList.add('error');
+    } else if (/\[WARNING\]/i.test(text)) {
+      span.classList.add('warn');
+    } else if (/no broken links/i.test(text) || /✓/.test(text)) {
+      span.classList.add('ok');
+    }
+    span.textContent = text;
+    outputLog.appendChild(span);
+    outputLog.appendChild(document.createTextNode('\n'));
+    // Auto-scroll to bottom
+    outputLog.scrollTop = outputLog.scrollHeight;
+  }
+
+  // ── Show result banner ──────────────────────────────────────────────────
+  function showResult(exitCode, reportPath) {
+    resultBanner.className = '';
+    resultBanner.style.display = '';
+
+    if (exitCode === 0) {
+      resultBanner.classList.add('success');
+      resultText.textContent = '✓ Validation complete — no broken links found.';
+    } else if (exitCode === 1) {
+      resultBanner.classList.add('broken');
+      resultText.textContent = '⚠ Validation complete — broken links were found.';
+    } else {
+      resultBanner.classList.add('error');
+      resultText.textContent = '✕ Validator exited with an error (exit code ' + exitCode + ').';
+    }
+
+    if (reportPath && exitCode !== 2) {
+      btnReport.href = '/report?path=' + encodeURIComponent(reportPath);
+      btnReport.style.display = '';
+    } else {
+      btnReport.style.display = 'none';
+    }
+  }
+
+  // ── Start SSE stream ────────────────────────────────────────────────────
+  function startStream() {
+    if (evtSource) {
+      evtSource.close();
+      evtSource = null;
+    }
+
+    evtSource = new EventSource('/stream');
+
+    evtSource.onmessage = function (e) {
+      var msg;
+      try { msg = JSON.parse(e.data); } catch (_) { return; }
+
+      if (msg.type === 'line') {
+        appendLine(msg.text);
+      } else if (msg.type === 'done') {
+        evtSource.close();
+        evtSource = null;
+        btnRun.disabled = false;
+        // Fetch the report path from status
+        fetch('/status')
+          .then(function (r) { return r.json(); })
+          .then(function (s) { showResult(msg.exit_code, s.report_path); });
+      }
+    };
+
+    evtSource.onerror = function () {
+      appendLine('[ERROR] Lost connection to server.');
+      evtSource.close();
+      evtSource = null;
+      btnRun.disabled = false;
+    };
+  }
+
+  // ── Form submit ─────────────────────────────────────────────────────────
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    runError.textContent = '';
+
+    // Clear previous output
+    outputLog.innerHTML = '';
+    resultBanner.className = '';
+    resultBanner.style.display = 'none';
+    btnReport.style.display = 'none';
+    outputSec.style.display = '';
+    btnRun.disabled = true;
+
+    var data = new FormData(form);
+
+    fetch('/run', { method: 'POST', body: data })
+      .then(function (r) {
+        if (r.status === 409) {
+          runError.textContent = 'A job is already running. Please wait.';
+          btnRun.disabled = false;
+          return null;
+        }
+        return r.json();
+      })
+      .then(function (json) {
+        if (!json) return;
+        if (!json.ok) {
+          runError.textContent = json.error || 'Unknown error.';
+          btnRun.disabled = false;
+          return;
+        }
+        startStream();
+      })
+      .catch(function (err) {
+        runError.textContent = 'Request failed: ' + err;
+        btnRun.disabled = false;
+      });
+  });
+
+})();
+</script>
+
+</body>
+</html>
